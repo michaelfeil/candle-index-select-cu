@@ -1,12 +1,16 @@
 use candle::{DType, Device, Result, Tensor};
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 fn setup_tensors(
     rows: usize,
     cols: usize,
     out_rows: usize,
 ) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
-    let dev = Device::new_cuda(0)?;
+    let dev = if Device::cuda_is_available() {
+        Device::new_cuda(0)?
+    } else {
+        Device::Cpu
+    };
 
     let x_f32 = Tensor::randn(0.0f32, 1.0, (rows, cols), &dev)?;
     let x_f16 = x_f32.to_dtype(DType::F16)?;
@@ -24,25 +28,28 @@ fn bench_index_select(c: &mut Criterion) {
 
     let (x_f32, x_f16, idx_f32, idx_f16) = match setup_tensors(rows, cols, out_rows) {
         Ok(t) => t,
-        Err(_) => return, // no CUDA, skip
+        Err(e) => {
+            println!("Failed to setup tensors, skipping benchmark: {:?}", e);
+            return;
+        }
     };
 
     let mut group = c.benchmark_group("index_select");
 
-    group.bench_function("builtin_f32", |b| {
-        b.iter(|| x_f32.index_select(&idx_f32, 0).unwrap())
+    group.bench_function("native_f32", |b| {
+        b.iter(|| black_box(x_f32.index_select(&idx_f32, 0).unwrap()))
     });
 
-    group.bench_function("fast_f32", |b| {
-        b.iter(|| candle_index_select_cu::index_select(&x_f32, &idx_f32, 0).unwrap())
+    group.bench_function("custom_f32", |b| {
+        b.iter(|| black_box(candle_index_select_cu::index_select(&x_f32, &idx_f32, 0).unwrap()))
     });
 
-    group.bench_function("builtin_f16", |b| {
-        b.iter(|| x_f16.index_select(&idx_f16, 0).unwrap())
+    group.bench_function("native_f16", |b| {
+        b.iter(|| black_box(x_f16.index_select(&idx_f16, 0).unwrap()))
     });
 
-    group.bench_function("fast_f16", |b| {
-        b.iter(|| candle_index_select_cu::index_select(&x_f16, &idx_f16, 0).unwrap())
+    group.bench_function("custom_f16", |b| {
+        b.iter(|| black_box(candle_index_select_cu::index_select(&x_f16, &idx_f16, 0).unwrap()))
     });
 
     group.finish();
