@@ -91,6 +91,63 @@ fn run_benchmark<S: Into<Shape> + Clone>(
     });
 
     group.finish();
+
+    // --- Manual Summary ---
+    println!("\n--- Summary for {} ---", group_name);
+    let shape_dims = x_f32.dims();
+    println!("Shape: {:?}, Out Rows: {}", shape_dims, out_rows);
+
+    // Helper to run a few iterations and get an average time
+    let measure = |f: &mut dyn FnMut()| {
+        let mut durations = Vec::new();
+        // Warmup
+        for _ in 0..5 {
+            f();
+        }
+        // Measurement
+        for _ in 0..10 {
+            let start = std::time::Instant::now();
+            f();
+            durations.push(start.elapsed());
+        }
+        let avg_duration = durations.iter().sum::<std::time::Duration>() / durations.len() as u32;
+        avg_duration
+    };
+
+    let mut native_f32 = || {
+        let t = x_f32.index_select(&idx_f32, 0).unwrap();
+        t.device().synchronize().unwrap();
+    };
+    let mut custom_f32 = || {
+        let t = candle_index_select_cu::index_select(&x_f32, &idx_f32, 0).unwrap();
+        t.device().synchronize().unwrap();
+    };
+    let mut native_f16 = || {
+        let t = x_f16.index_select(&idx_f16, 0).unwrap();
+        t.device().synchronize().unwrap();
+    };
+    let mut custom_f16 = || {
+        let t = candle_index_select_cu::index_select(&x_f16, &idx_f16, 0).unwrap();
+        t.device().synchronize().unwrap();
+    };
+
+    let native_f32_dur = measure(&mut native_f32);
+    let custom_f32_dur = measure(&mut custom_f32);
+    let native_f16_dur = measure(&mut native_f16);
+    let custom_f16_dur = measure(&mut custom_f16);
+
+    let f32_speedup = native_f32_dur.as_secs_f64() / custom_f32_dur.as_secs_f64();
+    println!(
+        "F32: Native: {:>10.3?} | Custom: {:>10.3?} | Speedup: {:.2}x",
+        native_f32_dur, custom_f32_dur, f32_speedup
+    );
+
+    let f16_speedup = native_f16_dur.as_secs_f64() / custom_f16_dur.as_secs_f64();
+    println!(
+        "F16: Native: {:>10.3?} | Custom: {:>10.3?} | Speedup: {:.2}x",
+        native_f16_dur, custom_f16_dur, f16_speedup
+    );
+    println!("-----------------------------------\n");
 }
 
 fn bench_index_select(c: &mut Criterion) {
