@@ -4,57 +4,49 @@
 #include <stddef.h>
 #include <type_traits>
 
-//
-// Scalar kernel: works for all shapes, any T.
-// layout: x [rows, cols], out [index_count, cols], indices [index_count]
-//
+// ---------------------------
+// Scalar row-wise kernel
+// ---------------------------
+// x:   [rows, cols]
+// idx: [index_count]
+// out: [index_count, cols]
 template <typename T>
-__global__ void index_select_kernel_scalar(
-    const T* __restrict__ x,          // [rows, cols]
-    const uint32_t* __restrict__ idx, // [index_count]
-    T* __restrict__ out,              // [index_count, cols]
+__global__ void index_select_rows_scalar(
+    const T* __restrict__ x,
+    const uint32_t* __restrict__ idx,
+    T* __restrict__ out,
     uint32_t rows,
     uint32_t cols,
     uint32_t index_count
 ) {
-    const uint64_t total = static_cast<uint64_t>(index_count) * cols;
+    // Each block processes multiple output rows (indices) in a grid-stride loop.
+    uint32_t j = blockIdx.x;
+    uint32_t j_stride = gridDim.x;
 
-    for (uint64_t linear = blockIdx.x * blockDim.x + threadIdx.x;
-         linear < total;
-         linear += static_cast<uint64_t>(blockDim.x) * gridDim.x) {
-
-        // decode flat index -> (j, c)
-        uint32_t j = static_cast<uint32_t>(linear / cols);   // index position
-        uint32_t c = static_cast<uint32_t>(linear % cols);   // column
-
+    for (; j < index_count; j += j_stride) {
         uint32_t r = idx[j];
-
-        // NOTE: we assume indices are valid. If you want Torch-like error checking,
-        // you can enable this in a debug build and report via a status buffer:
+        // Optional bounds check (debug):
         // if (r >= rows) return;
-        uint64_t src_off = static_cast<uint64_t>(r) * cols + c;
-        out[linear] = x[src_off];
+
+        const T* __restrict__ src_row = x   + (size_t)r * cols;
+        T*       __restrict__ dst_row = out + (size_t)j * cols;
+
+        // Threads in a block walk columns contiguously -> coalesced
+        for (uint32_t c = threadIdx.x; c < cols; c += blockDim.x) {
+            dst_row[c] = src_row[c];
+        }
     }
 }
 
-//
-// Vector type helper: maps (T, Vec) -> underlying vectorized type
-//
-template <typename T, int Vec> struct VecType;
-
-template <> struct VecType<float, 2> { using Type = float2; };
+// ---------------------------
+// Vectorized row-wise kernel
+// ---------------------------
+// VecType helper
+template <typename T, int Vec> struct VecType {};
 template <> struct VecType<float, 4> { using Type = float4; };
 
-// For __half you *can* add half2 / custom vector structs if you want,
-// but we keep scalar for half for now.
-//
-
-//
-// Vectorized kernel: treats the last dim as groups of Vec elements.
-// Only used when cols is divisible by Vec and pointers are properly aligned.
-//
 template <typename T, int Vec>
-__global__ void index_select_kernel_vec(
+__global__ void index_select_rows_vec(
     const T* __restrict__ x,
     const uint32_t* __restrict__ idx,
     T* __restrict__ out,
@@ -65,65 +57,55 @@ __global__ void index_select_kernel_vec(
     using VecT = typename VecType<T, Vec>::Type;
 
     const uint32_t cols_vec = cols / Vec;
-    const uint64_t total_vec = static_cast<uint64_t>(index_count) * cols_vec;
+    uint32_t j = blockIdx.x;
+    uint32_t j_stride = gridDim.x;
 
     const VecT* __restrict__ x_vec   = reinterpret_cast<const VecT*>(x);
-    VecT* __restrict__ out_vec       = reinterpret_cast<VecT*>(out);
+    VecT*       __restrict__ out_vec = reinterpret_cast<VecT*>(out);
 
-    for (uint64_t linear = blockIdx.x * blockDim.x + threadIdx.x;
-         linear < total_vec;
-         linear += static_cast<uint64_t>(blockDim.x) * gridDim.x) {
-
-        uint32_t j = static_cast<uint32_t>(linear / cols_vec);
-        uint32_t c_vec = static_cast<uint32_t>(linear % cols_vec);
-
+    for (; j < index_count; j += j_stride) {
         uint32_t r = idx[j];
-        // if (r >= rows) return;  // optional debug check
+        // Optional bounds check:
+        // if (r >= rows) return;
 
-        uint64_t src_off_vec = static_cast<uint64_t>(r) * cols_vec + c_vec;
-        VecT v = x_vec[src_off_vec];
-        out_vec[linear] = v;
+        const VecT* __restrict__ src_row =
+            x_vec   + (size_t)r * cols_vec;
+        VecT*       __restrict__ dst_row =
+            out_vec + (size_t)j * cols_vec;
+
+        for (uint32_t c_vec = threadIdx.x; c_vec < cols_vec; c_vec += blockDim.x) {
+            dst_row[c_vec] = src_row[c_vec];
+        }
     }
 }
 
-//
-// Small helper to pick a grid/block size.
-// This is very similar in spirit to what PyTorch does for many elementwise/gather ops:
-// - 1D kernel over total elements
-// - block size 256
-// - grid clamped to multi_processor_count * factor
-//
-static inline void compute_launch_config(
-    uint64_t total_elems,
+// ---------------------------
+// Launch config helper
+// ---------------------------
+static inline void compute_launch_config_rows(
+    uint32_t index_count,
+    uint32_t cols,
     int multi_processor_count,
     dim3& grid,
     dim3& block
 ) {
-    if (total_elems == 0) {
-        grid = dim3(1, 1, 1);
-        block = dim3(1, 1, 1);
-        return;
-    }
-
-    int blk = 256;
-    // Factor of SMs to launch; 8 is a reasonable default for modern GPUs (incl. H100)
+    // Heuristic: many rows -> many blocks, but cap at mp * factor
+    const int threads = 256;
+    // 4–8x SMs is usually good for memory-bound kernels
     int max_blocks = multi_processor_count > 0 ? multi_processor_count * 8 : 1024;
 
-    uint64_t grid_raw = (total_elems + blk - 1) / blk;
-    if (grid_raw > static_cast<uint64_t>(max_blocks)) {
-        grid_raw = static_cast<uint64_t>(max_blocks);
-    }
-    if (grid_raw < 1) grid_raw = 1;
+    // If index_count is small, don't launch more blocks than rows.
+    int blocks = (int)index_count;
+    if (blocks > max_blocks) blocks = max_blocks;
+    if (blocks < 1) blocks = 1;
 
-    grid = dim3(static_cast<unsigned int>(grid_raw), 1, 1);
-    block = dim3(blk, 1, 1);
+    grid  = dim3(blocks, 1, 1);
+    block = dim3(threads, 1, 1);
 }
 
-//
-// Type-specific launcher.
-// This is the main entry from the C interface.
-// We choose between vectorized (float4) and scalar paths here.
-//
+// ---------------------------
+// Type-specific launcher
+// ---------------------------
 template <typename T>
 static void launch_index_select(
     const void* x,
@@ -138,70 +120,51 @@ static void launch_index_select(
         return;
     }
 
-    const uint64_t total = static_cast<uint64_t>(index_count) * cols;
     dim3 grid, block;
-    compute_launch_config(total, multi_processor_count, grid, block);
+    compute_launch_config_rows(index_count, cols, multi_processor_count, grid, block);
 
     const T* x_t   = static_cast<const T*>(x);
-    T* dst_t       = static_cast<T*>(dst);
+    T*       dst_t = static_cast<T*>(dst);
 
-    // --- Vectorized path for float (float4) ---
+    // Vectorized path for float, cols multiple of 4, and 16-byte alignment.
     if constexpr (std::is_same<T, float>::value) {
-        // Only use vec path when the last dimension is a multiple of 4
-        // and both pointers are 16-byte aligned.
         const uintptr_t x_addr   = reinterpret_cast<uintptr_t>(x_t);
         const uintptr_t dst_addr = reinterpret_cast<uintptr_t>(dst_t);
         const bool aligned =
-            ((x_addr % alignof(float4)) == 0) &&
+            ((x_addr  % alignof(float4)) == 0) &&
             ((dst_addr % alignof(float4)) == 0);
 
         if (aligned && (cols % 4 == 0)) {
-            const uint32_t cols_vec = cols / 4;
-            const uint64_t total_vec =
-                static_cast<uint64_t>(index_count) * cols_vec;
-
-            dim3 grid_vec, block_vec;
-            compute_launch_config(total_vec, multi_processor_count, grid_vec, block_vec);
-
-            index_select_kernel_vec<float, 4><<<grid_vec, block_vec>>>(
+            index_select_rows_vec<float, 4><<<grid, block>>>(
                 x_t, idx, dst_t, rows, cols, index_count
             );
-
 #ifdef DEBUG
             cudaError_t err = cudaGetLastError();
             if (err != cudaSuccess) {
-                printf("index_select_kernel_vec<float,4> launch failed: %s\n",
+                printf("index_select_rows_vec<float,4> launch failed: %s\n",
                        cudaGetErrorString(err));
             }
 #endif
             return;
         }
-        // Else: fall through to scalar kernel below.
     }
 
-    // --- Scalar fallback path (any T, any shape) ---
-
-    index_select_kernel_scalar<T><<<grid, block>>>(
-        x_t,
-        idx,
-        dst_t,
-        rows,
-        cols,
-        index_count
+    // Scalar fallback (any T)
+    index_select_rows_scalar<T><<<grid, block>>>(
+        x_t, idx, dst_t, rows, cols, index_count
     );
-
 #ifdef DEBUG
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
-        printf("index_select_kernel_scalar launch failed: %s\n",
+        printf("index_select_rows_scalar launch failed: %s\n",
                cudaGetErrorString(err));
     }
 #endif
 }
 
-//
-// C API: matches what you already had in your Rust FFI.
-//
+// ---------------------------
+// C entry point
+// ---------------------------
 extern "C" void run_index_select(
     const void* x,
     const uint32_t* indices,
@@ -215,8 +178,7 @@ extern "C" void run_index_select(
     // dtype_code: 0 = f16, 1 = f32
     switch (dtype_code) {
     case 0:
-        // For __half we use scalar kernel for now. You can add half2 / custom vec types
-        // using the same pattern as float if you really want to squeeze more out.
+        // __half: scalar path only for now; can add __half2 vectorization later.
         launch_index_select<__half>(
             x, indices, dst, rows, cols, index_count, multi_processor_count);
         break;
@@ -225,7 +187,7 @@ extern "C" void run_index_select(
             x, indices, dst, rows, cols, index_count, multi_processor_count);
         break;
     default:
-        // Unsupported dtype; Rust side will have already errored.
+        // Unsupported dtype; Rust side should have error'd out already.
         break;
     }
 }
