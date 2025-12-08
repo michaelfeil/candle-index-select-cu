@@ -350,3 +350,25 @@ fn test_output_is_contiguous() -> candle::Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_non_contiguous_input_errors() -> candle::Result<()> {
+    let device = match maybe_cuda_device() {
+        Some(d) => d,
+        None => return Ok(()),
+    };
+
+    // Create a non-contiguous tensor by permuting
+    let x = candle::Tensor::randn(0.0f32, 1.0, (100, 64), &device)?;
+    let x_permuted = x.permute((1, 0))?; // Now shape is (64, 100) and non-contiguous
+
+    assert!(!x_permuted.is_contiguous());
+
+    let indices = candle::Tensor::from_vec((0u32..30).collect::<Vec<_>>(), 30, &device)?;
+
+    // Expect an error because the fast path requires a contiguous input tensor
+    let result = candle_index_select::index_select(&x_permuted, &indices, 0);
+    assert!(result.is_err());
+
+    Ok(())
+}

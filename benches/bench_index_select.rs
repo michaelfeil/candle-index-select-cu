@@ -51,25 +51,43 @@ fn run_benchmark<S: Into<Shape> + Clone>(
     group.warm_up_time(std::time::Duration::from_millis(1500));
 
     group.bench_function("native_f32", |b| {
-        b.iter(|| black_box(x_f32.index_select(&idx_f32, 0).unwrap()))
+        b.iter(|| {
+            let result = black_box(x_f32.index_select(&idx_f32, 0).unwrap());
+            // Wait for the GPU to finish by synchronizing the device
+            result.device().synchronize().unwrap();
+        })
     });
 
     let native_result_f32 = x_f32.index_select(&idx_f32, 0).unwrap();
     let custom_result_f32 = candle_index_select_cu::index_select(&x_f32, &idx_f32, 0).unwrap();
     assert_equal(&native_result_f32, &custom_result_f32, 1e-6).unwrap();
     group.bench_function("custom_f32", |b| {
-        b.iter(|| black_box(candle_index_select_cu::index_select(&x_f32, &idx_f32, 0).unwrap()))
+        b.iter(|| {
+            let result =
+                black_box(candle_index_select_cu::index_select(&x_f32, &idx_f32, 0).unwrap());
+            // Wait for the GPU to finish
+            result.device().synchronize().unwrap();
+        })
     });
 
     group.bench_function("native_f16", |b| {
-        b.iter(|| black_box(x_f16.index_select(&idx_f16, 0).unwrap()))
+        b.iter(|| {
+            let result = black_box(x_f16.index_select(&idx_f16, 0).unwrap());
+            // Wait for the GPU to finish
+            result.device().synchronize().unwrap();
+        })
     });
 
     let native_result_f16 = x_f16.index_select(&idx_f16, 0).unwrap();
     let custom_result_f16 = candle_index_select_cu::index_select(&x_f16, &idx_f16, 0).unwrap();
     assert_equal(&native_result_f16, &custom_result_f16, 1e-2).unwrap();
     group.bench_function("custom_f16", |b| {
-        b.iter(|| black_box(candle_index_select_cu::index_select(&x_f16, &idx_f16, 0).unwrap()))
+        b.iter(|| {
+            let result =
+                black_box(candle_index_select_cu::index_select(&x_f16, &idx_f16, 0).unwrap());
+            // Wait for the GPU to finish
+            result.device().synchronize().unwrap();
+        })
     });
 
     group.finish();
