@@ -1,5 +1,5 @@
-use candle_index_select_cu as candle_index_select;
 use candle_index_select::candle;
+use candle_index_select_cu as candle_index_select;
 
 fn maybe_cuda_device() -> Option<candle::Device> {
     match candle::Device::new_cuda(0) {
