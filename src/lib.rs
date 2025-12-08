@@ -4,9 +4,7 @@ use candle::backend::BackendStorage;
 use candle::cuda_backend::cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT;
 use candle::cuda_backend::cudarc::driver::DevicePtr;
 use candle::cuda_backend::WrapErr;
-use candle::{
-    CpuStorage, CudaStorage, DType, Layout, Result, Shape, Storage, Tensor,
-};
+use candle::{CpuStorage, CudaStorage, DType, Layout, Result, Shape, Storage, Tensor};
 use half::f16;
 use std::ptr;
 
@@ -14,9 +12,7 @@ fn index_select_internal_type(dtype: DType) -> Result<u32> {
     let code = match dtype {
         DType::F16 => 0,
         DType::F32 => 1,
-        dt => candle::bail!(
-            "candle-index-select only supports f16 and f32 (got {dt:?})"
-        ),
+        dt => candle::bail!("candle-index-select only supports f16 and f32 (got {dt:?})"),
     };
     Ok(code)
 }
@@ -28,8 +24,7 @@ pub struct IndexSelect {
 
 impl IndexSelect {
     fn fwd<
-        T: candle::cuda_backend::CudaDType
-            + candle::cuda_backend::cudarc::driver::DeviceRepr,
+        T: candle::cuda_backend::CudaDType + candle::cuda_backend::cudarc::driver::DeviceRepr,
     >(
         &self,
         x: &CudaStorage,
@@ -47,14 +42,10 @@ impl IndexSelect {
         let ids_rank = ids_stride.len();
 
         if x_rank != 2 {
-            candle::bail!(
-                "candle-index-select expects input tensors of rank 2. Found: {x_rank}"
-            );
+            candle::bail!("candle-index-select expects input tensors of rank 2. Found: {x_rank}");
         }
         if ids_rank != 1 {
-            candle::bail!(
-                "candle-index-select expects index tensor of rank 1. Found: {ids_rank}"
-            );
+            candle::bail!("candle-index-select expects index tensor of rank 1. Found: {ids_rank}");
         }
         if x_stride[x_rank - 1] != 1 {
             candle::bail!(
@@ -144,9 +135,7 @@ impl candle::CustomOp2 for IndexSelect {
         match x.dtype() {
             DType::F16 => self.fwd::<f16>(x, x_l, ids, ids_l),
             DType::F32 => self.fwd::<f32>(x, x_l, ids, ids_l),
-            dt => candle::bail!(
-                "candle-index-select only supports f16 and f32 (got {dt:?})"
-            ),
+            dt => candle::bail!("candle-index-select only supports f16 and f32 (got {dt:?})"),
         }
     }
 }
@@ -244,12 +233,9 @@ mod tests {
 
         let x = Tensor::randn(0., 1., (rows, cols), &device)?.to_dtype(DType::F32)?;
         // Some duplicates & shuffle to be realistic.
-        let raw_idx: Vec<u32> = (0..rows as u32)
-            .flat_map(|i| [i, i])
-            .collect();
+        let raw_idx: Vec<u32> = (0..rows as u32).flat_map(|i| [i, i]).collect();
         let index_count = raw_idx.len();
-        let indices =
-            Tensor::from_vec(raw_idx, index_count, &device)?.to_dtype(DType::U32)?;
+        let indices = Tensor::from_vec(raw_idx, index_count, &device)?.to_dtype(DType::U32)?;
 
         let y_fast = index_select(&x, &indices, 0)?;
         let y_ref = x.index_select(&indices, 0)?;
@@ -266,16 +252,18 @@ mod tests {
 
         let x = Tensor::randn(0., 1., (rows, cols), &device)?.to_dtype(DType::F16)?;
         let raw_idx: Vec<u32> = (0..rows as u32).collect();
-        let indices =
-            Tensor::from_vec(raw_idx, rows, &device)?.to_dtype(DType::U32)?;
+        let indices = Tensor::from_vec(raw_idx, rows, &device)?.to_dtype(DType::U32)?;
 
         let y_fast = index_select(&x, &indices, 0)?;
-        let y_ref = x.to_dtype(DType::F32)?
+        let y_ref = x
+            .to_dtype(DType::F32)?
             .index_select(&indices, 0)?
             .to_dtype(DType::F16)?;
 
-        assert_eq!(to_vec2_round(&y_fast.to_dtype(DType::F32)?, 3)?, 
-                   to_vec2_round(&y_ref.to_dtype(DType::F32)?, 3)?);
+        assert_eq!(
+            to_vec2_round(&y_fast.to_dtype(DType::F32)?, 3)?,
+            to_vec2_round(&y_ref.to_dtype(DType::F32)?, 3)?
+        );
         Ok(())
     }
 
@@ -283,8 +271,7 @@ mod tests {
     fn test_fallback_cpu() -> Result<()> {
         let device = Device::Cpu;
         let x = Tensor::randn(0., 1., (8, 4), &device)?;
-        let indices = Tensor::from_vec(vec![0u32, 3, 7], 3, &device)?
-            .to_dtype(DType::U32)?;
+        let indices = Tensor::from_vec(vec![0u32, 3, 7], 3, &device)?.to_dtype(DType::U32)?;
 
         // Should just call regular candle index_select (CPU).
         let y = index_select(&x, &indices, 0)?;

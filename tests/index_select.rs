@@ -1,5 +1,5 @@
-use candle_core as candle;
 use candle::Tensor;
+use candle_core as candle;
 
 fn maybe_cuda_device() -> Option<candle::Device> {
     match candle::Device::new_cuda(0) {
@@ -34,16 +34,18 @@ fn compare_with_builtin_f32() -> candle::Result<()> {
     let out_rows = 70_000;
 
     let x = Tensor::randn(0.0f32, 1.0, (rows, cols), &device)?;
-    let idx_data: Vec<u32> = (0..out_rows)
-        .map(|i| (i as u32) % (rows as u32))
-        .collect();
+    let idx_data: Vec<u32> = (0..out_rows).map(|i| (i as u32) % (rows as u32)).collect();
     let indices = Tensor::from_vec(idx_data, out_rows, &device)?;
 
     let fast = candle_index_select::index_select(&x, &indices, 0)?;
     let baseline = x.index_select(&indices, 0)?;
 
     assert_eq!(fast.dims(), baseline.dims());
-    assert!(allclose(&fast.flatten_all()?, &baseline.flatten_all()?, 1e-4)?);
+    assert!(allclose(
+        &fast.flatten_all()?,
+        &baseline.flatten_all()?,
+        1e-4
+    )?);
 
     Ok(())
 }
@@ -62,9 +64,7 @@ fn compare_with_builtin_f16() -> candle::Result<()> {
     let x_f32 = Tensor::randn(0.0f32, 1.0, (rows, cols), &device)?;
     let x = x_f32.to_dtype(candle::DType::F16)?;
 
-    let idx_data: Vec<u32> = (0..out_rows)
-        .map(|i| (i as u32) % (rows as u32))
-        .collect();
+    let idx_data: Vec<u32> = (0..out_rows).map(|i| (i as u32) % (rows as u32)).collect();
     let indices = Tensor::from_vec(idx_data, out_rows, &device)?;
 
     let fast = candle_index_select::index_select(&x, &indices, 0)?;

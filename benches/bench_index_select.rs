@@ -1,5 +1,5 @@
-use candle_core as candle;
 use candle::Tensor;
+use candle_core as candle;
 use criterion::{criterion_group, criterion_main, Criterion};
 
 fn setup_tensors(
@@ -12,9 +12,7 @@ fn setup_tensors(
     let x_f32 = Tensor::randn(0.0f32, 1.0, (rows, cols), &dev)?;
     let x_f16 = x_f32.to_dtype(candle::DType::F16)?;
 
-    let idx_data: Vec<u32> = (0..out_rows)
-        .map(|i| (i as u32) % (rows as u32))
-        .collect();
+    let idx_data: Vec<u32> = (0..out_rows).map(|i| (i as u32) % (rows as u32)).collect();
     let indices = Tensor::from_vec(idx_data, out_rows, &dev)?;
 
     Ok((x_f32, x_f16, indices.clone(), indices))
@@ -25,11 +23,10 @@ fn bench_index_select(c: &mut Criterion) {
     let cols = 1024;
     let out_rows = 70_000;
 
-    let (x_f32, x_f16, idx_f32, idx_f16) =
-        match setup_tensors(rows, cols, out_rows) {
-            Ok(t) => t,
-            Err(_) => return, // no CUDA, skip
-        };
+    let (x_f32, x_f16, idx_f32, idx_f16) = match setup_tensors(rows, cols, out_rows) {
+        Ok(t) => t,
+        Err(_) => return, // no CUDA, skip
+    };
 
     let mut group = c.benchmark_group("index_select");
 
