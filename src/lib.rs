@@ -5,7 +5,7 @@ use candle::cuda_backend::cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATT
 use candle::cuda_backend::cudarc::driver::DevicePtr;
 use candle::cuda_backend::WrapErr;
 use candle::{
-    CpuStorage, CudaStorage, DType, Device, Layout, Result, Shape, Storage, Tensor,
+    CpuStorage, CudaStorage, DType, Layout, Result, Shape, Storage, Tensor,
 };
 use half::f16;
 use std::ptr;

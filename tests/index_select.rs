@@ -80,3 +80,5 @@ fn compare_with_builtin_f16() -> candle::Result<()> {
 
     Ok(())
 }
+// tOdo: add much more test (2D, 3D, contiguous, non-contiguous, dim 1, dim 2, etc.)
+// IMPORTANT.
