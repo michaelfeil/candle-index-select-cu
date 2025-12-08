@@ -155,6 +155,7 @@ fn bench_index_select(c: &mut Criterion) {
     run_benchmark(c, "index_select_long_2d", (16_000, 1024), 70_000);
     run_benchmark(c, "index_select_very_long_2d", (100_000, 2048), 500_000);
     run_benchmark(c, "index_select_3d", (10, 100, 128), 200);
+    run_benchmark(c, "index_select_long_3d", (2000, 64, 256), 10_000);
 }
 
 criterion_group!(benches, bench_index_select);
