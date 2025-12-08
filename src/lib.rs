@@ -17,37 +17,33 @@ fn index_select_internal_type(dtype: DType) -> Result<u32> {
     Ok(code)
 }
 
-/// Fast CUDA index_select along dim 0 for 2D inputs.
+/// Fast CUDA index_select along dim 0 for N-D contiguous inputs (rank >= 2).
+/// We flatten all trailing dimensions into a single `cols = dims[1..].product()`.
 pub struct IndexSelect {
     pub dim: usize,
 }
 
-/// Validate input layouts and return (rows, cols, index_count)
+/// Validate input layouts and return (rows, cols_flat, index_count, out_shape).
+///
+/// Requirements for fast path:
+/// - x: rank >= 2, fully contiguous, dim == 0
+/// - ids: rank 1, contiguous
 fn validate_inputs(
     x_l: &Layout,
     ids_l: &Layout,
     dim: usize,
-) -> Result<(usize, usize, usize)> {
+) -> Result<(usize, usize, usize, Shape)> {
+    let x_dims = x_l.dims();
     let x_stride = x_l.stride();
     let ids_stride = ids_l.stride();
-    let x_rank = x_stride.len();
+    let x_rank = x_dims.len();
     let ids_rank = ids_stride.len();
 
-    if x_rank != 2 {
-        candle::bail!("candle-index-select expects input tensors of rank 2. Found: {x_rank}");
+    if x_rank < 2 {
+        candle::bail!("candle-index-select expects input tensors of rank >= 2. Found: {x_rank}");
     }
     if ids_rank != 1 {
         candle::bail!("candle-index-select expects index tensor of rank 1. Found: {ids_rank}");
-    }
-    if x_stride[x_rank - 1] != 1 {
-        candle::bail!(
-            "the last dim of x must be contiguous for candle-index-select ({x_stride:?})"
-        );
-    }
-    if ids_stride[ids_rank - 1] != 1 {
-        candle::bail!(
-            "indices tensor must be contiguous for candle-index-select ({ids_stride:?})"
-        );
     }
     if dim != 0 {
         candle::bail!(
@@ -56,11 +52,39 @@ fn validate_inputs(
         );
     }
 
-    let rows = x_l.dims()[0];
-    let cols = x_l.dims()[1];
+    // Indices must be contiguous 1D
+    if ids_stride[0] != 1 {
+        candle::bail!("indices tensor must be contiguous for candle-index-select ({ids_stride:?})");
+    }
+
+    // x must be fully contiguous (row-major).
+    // Candle's contiguous convention: stride[last] = 1, and
+    // stride[k-1] = stride[k] * dims[k] for all k>0.
+    if *x_stride.last().unwrap() != 1 {
+        candle::bail!(
+            "the last dim of x must be contiguous for candle-index-select ({x_stride:?})"
+        );
+    }
+    let mut expected = 1usize;
+    for (&d, &s) in x_dims.iter().rev().zip(x_stride.iter().rev()) {
+        if s != expected {
+            candle::bail!(
+                "x must be fully contiguous for candle-index-select (dims={x_dims:?}, stride={x_stride:?})"
+            );
+        }
+        expected *= d;
+    }
+
+    let rows = x_dims[0];
+    let cols: usize = x_dims[1..].iter().product();
     let index_count = ids_l.dims()[0];
 
-    Ok((rows, cols, index_count))
+    // Output shape: replace dim 0 with index_count, keep trailing dims.
+    let mut out_dims = x_dims.to_vec();
+    out_dims[0] = index_count;
+    let out_shape = Shape::from(out_dims);
+
+    Ok((rows, cols, index_count, out_shape))
 }
 
 // =============================================================================
@@ -81,6 +105,7 @@ mod cuda_impl {
         rows: usize,
         cols: usize,
         index_count: usize,
+        out_shape: Shape,
         dtype_code: u32,
     ) -> Result<(CudaStorage, Shape)> {
         let dev = x.device();
@@ -91,7 +116,6 @@ mod cuda_impl {
         let x = x.slice(x_l.start_offset()..);
         let ids = ids.slice(ids_l.start_offset()..);
 
-        let out_shape = Shape::from((index_count, cols));
         let out = unsafe { dev.alloc::<T>(out_shape.elem_count()) }?;
 
         let stream = dev.cuda_stream();
@@ -150,6 +174,7 @@ mod cuda_impl {
         rows: usize,
         cols: usize,
         index_count: usize,
+        out_shape: Shape,
         dtype_code: u32,
     ) -> Result<(CudaStorage, Shape)> {
         let dev = x.device();
@@ -160,7 +185,6 @@ mod cuda_impl {
         let x = x.slice(x_l.start_offset()..);
         let ids = ids.slice(ids_l.start_offset()..);
 
-        let out_shape = Shape::from((index_count, cols));
         let out = unsafe { dev.alloc::<T>(out_shape.elem_count()) }.w()?;
 
         let x_ptr = *x.device_ptr() as *const core::ffi::c_void;
@@ -199,9 +223,19 @@ impl IndexSelect {
         ids: &CudaStorage,
         ids_l: &Layout,
     ) -> Result<(CudaStorage, Shape)> {
-        let (rows, cols, index_count) = validate_inputs(x_l, ids_l, self.dim)?;
+        let (rows, cols, index_count, out_shape) = validate_inputs(x_l, ids_l, self.dim)?;
         let dtype_code = index_select_internal_type(x.dtype())?;
-        cuda_impl::fwd_impl::<T>(x, x_l, ids, ids_l, rows, cols, index_count, dtype_code)
+        cuda_impl::fwd_impl::<T>(
+            x,
+            x_l,
+            ids,
+            ids_l,
+            rows,
+            cols,
+            index_count,
+            out_shape,
+            dtype_code,
+        )
     }
 }
 
@@ -240,7 +274,7 @@ impl candle::CustomOp2 for IndexSelect {
 ///
 /// * Fast path:
 ///   - Device: CUDA
-///   - x: rank-2, last dim contiguous
+///   - x: rank >= 2, fully contiguous
 ///   - indices: rank-1, contiguous, DType::U32
 ///   - dim == 0
 ///   - dtype(x) ∈ {F16, F32}
@@ -276,11 +310,11 @@ pub fn index_select(x: &Tensor, indices: &Tensor, dim: usize) -> Result<Tensor> 
     let x_shape = x.shape();
     let ids_shape = indices.shape();
 
-    if x_shape.rank() != 2 || ids_shape.rank() != 1 {
+    // Fast path: dim == 0, x rank >= 2, indices rank == 1
+    if dim != 0 {
         return x.index_select(indices, dim);
     }
-
-    if dim != 0 {
+    if x_shape.rank() < 2 || ids_shape.rank() != 1 {
         return x.index_select(indices, dim);
     }
 
@@ -291,6 +325,8 @@ pub fn index_select(x: &Tensor, indices: &Tensor, dim: usize) -> Result<Tensor> 
         (Storage::Cuda(_), Storage::Cuda(_)) => {
             let xs = x_l.stride();
             let is = ids_l.stride();
+            // We’ll let validate_inputs enforce full contiguity, but we still
+            // require the last dims to be contiguous here as a quick filter.
             if xs[xs.len() - 1] != 1 || is[is.len() - 1] != 1 {
                 return x.index_select(indices, dim);
             }
