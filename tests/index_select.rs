@@ -332,3 +332,21 @@ fn test_narrow_columns() -> candle::Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_output_is_contiguous() -> candle::Result<()> {
+    let device = match maybe_cuda_device() {
+        Some(d) => d,
+        None => return Ok(()),
+    };
+
+    let indices = candle::Tensor::from_vec((0u32..30).collect::<Vec<_>>(), 30, &device)?;
+
+    // Test with a contiguous input tensor
+    let x_cont = candle::Tensor::randn(0.0f32, 1.0, (100, 64), &device)?;
+    assert!(x_cont.is_contiguous());
+    let fast_from_cont = candle_index_select::index_select(&x_cont, &indices, 0)?;
+    assert!(fast_from_cont.is_contiguous());
+
+    Ok(())
+}
