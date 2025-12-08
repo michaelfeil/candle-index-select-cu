@@ -2,10 +2,20 @@ mod ffi;
 
 pub use candle;
 use candle::backend::BackendStorage;
-use candle::cuda_backend::cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT;
-use candle::cuda_backend::cudarc::driver::DevicePtr;
 use candle::{CpuStorage, CudaStorage, DType, Layout, Result, Shape, Storage, Tensor};
 use half::f16;
+
+#[cfg(feature = "cuda-12")]
+use candle::cuda_backend::cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT;
+#[cfg(feature = "cuda-12")]
+use candle::cuda_backend::cudarc::driver::DevicePtr;
+
+#[cfg(feature = "cuda-11")]
+use candle::cuda_backend::cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT;
+#[cfg(feature = "cuda-11")]
+use candle::cuda_backend::cudarc::driver::DevicePtr;
+#[cfg(feature = "cuda-11")]
+use candle::cuda_backend::WrapErr;
 
 fn index_select_internal_type(dtype: DType) -> Result<u32> {
     let code = match dtype {
@@ -22,6 +32,7 @@ pub struct IndexSelect {
 }
 
 impl IndexSelect {
+    #[cfg(feature = "cuda-12")]
     fn fwd<
         T: candle::cuda_backend::CudaDType + candle::cuda_backend::cudarc::driver::DeviceRepr,
     >(
@@ -31,10 +42,8 @@ impl IndexSelect {
         ids: &CudaStorage,
         ids_l: &Layout,
     ) -> Result<(CudaStorage, Shape)> {
-        // Assume all tensors are on the same device and take device of x.
         let dev = x.device();
 
-        // Layout & shape checks.
         let x_stride = x_l.stride();
         let ids_stride = ids_l.stride();
         let x_rank = x_stride.len();
@@ -67,32 +76,26 @@ impl IndexSelect {
         let cols = x_l.dims()[1];
         let index_count = ids_l.dims()[0];
 
-        // Get internal dtype code.
         let dtype_code = index_select_internal_type(x.dtype())?;
 
-        // Get cuda slices for all tensors (typed).
         let x = x.as_cuda_slice::<T>()?;
         let ids = ids.as_cuda_slice::<u32>()?;
 
-        // Respect layout offsets.
         let x = x.slice(x_l.start_offset()..);
         let ids = ids.slice(ids_l.start_offset()..);
 
-        // Output shape: [index_count, cols].
         let out_shape = Shape::from((index_count, cols));
         let out = unsafe { dev.alloc::<T>(out_shape.elem_count()) }?;
 
-        // Get stream from the cuda device
+        // cudarc 0.16+ API: get stream from device, device_ptr takes stream arg
         let stream = dev.cuda_stream();
         let stream_ref = stream.as_ref();
 
-        // Query multiprocessor count from the context
         let multi_processors_count = stream
             .context()
             .attribute(CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT)
             .expect("failed to query CUDA multiprocessor count");
 
-        // Get raw device pointers and run kernel in a scope so sync guards are dropped before moving out
         {
             let (x_devptr, _x_sync) = x.device_ptr(stream_ref);
             let x_ptr = x_devptr as usize as *const core::ffi::c_void;
@@ -115,6 +118,89 @@ impl IndexSelect {
                     dtype_code,
                 );
             }
+        }
+
+        let out = CudaStorage::wrap_cuda_slice(out, dev.clone());
+        Ok((out, out_shape))
+    }
+
+    #[cfg(feature = "cuda-11")]
+    fn fwd<
+        T: candle::cuda_backend::CudaDType + candle::cuda_backend::cudarc::driver::DeviceRepr,
+    >(
+        &self,
+        x: &CudaStorage,
+        x_l: &Layout,
+        ids: &CudaStorage,
+        ids_l: &Layout,
+    ) -> Result<(CudaStorage, Shape)> {
+        let dev = x.device();
+
+        let x_stride = x_l.stride();
+        let ids_stride = ids_l.stride();
+        let x_rank = x_stride.len();
+        let ids_rank = ids_stride.len();
+
+        if x_rank != 2 {
+            candle::bail!("candle-index-select expects input tensors of rank 2. Found: {x_rank}");
+        }
+        if ids_rank != 1 {
+            candle::bail!("candle-index-select expects index tensor of rank 1. Found: {ids_rank}");
+        }
+        if x_stride[x_rank - 1] != 1 {
+            candle::bail!(
+                "the last dim of x must be contiguous for candle-index-select ({x_stride:?})"
+            );
+        }
+        if ids_stride[ids_rank - 1] != 1 {
+            candle::bail!(
+                "indices tensor must be contiguous for candle-index-select ({ids_stride:?})"
+            );
+        }
+        if self.dim != 0 {
+            candle::bail!(
+                "candle-index-select only supports dim == 0 for now (got {})",
+                self.dim
+            );
+        }
+
+        let rows = x_l.dims()[0];
+        let cols = x_l.dims()[1];
+        let index_count = ids_l.dims()[0];
+
+        let dtype_code = index_select_internal_type(x.dtype())?;
+
+        let x = x.as_cuda_slice::<T>()?;
+        let ids = ids.as_cuda_slice::<u32>()?;
+
+        let x = x.slice(x_l.start_offset()..);
+        let ids = ids.slice(ids_l.start_offset()..);
+
+        let out_shape = Shape::from((index_count, cols));
+        // Old cudarc API: alloc returns cudarc error, needs .w() wrapper
+        let out = unsafe { dev.alloc::<T>(out_shape.elem_count()) }.w()?;
+
+        // Old cudarc API: device_ptr() takes no args, returns &u64
+        let x_ptr = *x.device_ptr() as *const core::ffi::c_void;
+        let ids_ptr = *ids.device_ptr() as *const u32;
+        let dst_ptr = *out.device_ptr() as *mut core::ffi::c_void;
+
+        // Old candle API: attribute() on device directly
+        let multi_processors_count = dev
+            .attribute(CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT)
+            .expect("failed to query CUDA multiprocessor count");
+
+        unsafe {
+            ffi::run_index_select(
+                x_ptr,
+                ids_ptr,
+                dst_ptr,
+                rows as u32,
+                cols as u32,
+                index_count as u32,
+                multi_processors_count,
+                dtype_code,
+            );
         }
 
         let out = CudaStorage::wrap_cuda_slice(out, dev.clone());
@@ -167,7 +253,6 @@ impl candle::CustomOp2 for IndexSelect {
 pub fn index_select(x: &Tensor, indices: &Tensor, dim: usize) -> Result<Tensor> {
     use candle::{DType, Device};
 
-    // Fallback if devices differ (compare by matching on Device variants)
     let devices_match = match (x.device(), indices.device()) {
         (Device::Cpu, Device::Cpu) => true,
         (Device::Cuda(a), Device::Cuda(b)) => a.id() == b.id(),
@@ -179,22 +264,18 @@ pub fn index_select(x: &Tensor, indices: &Tensor, dim: usize) -> Result<Tensor> 
 
     let device = x.device();
 
-    // Only accelerate CUDA.
     if !matches!(device, Device::Cuda(_)) {
         return x.index_select(indices, dim);
     }
 
-    // Only f16/f32 inputs.
     if !matches!(x.dtype(), DType::F16 | DType::F32) {
         return x.index_select(indices, dim);
     }
 
-    // Only u32 indices.
     if indices.dtype() != DType::U32 {
         return x.index_select(indices, dim);
     }
 
-    // Shape checks: [rows, cols] and [index_count].
     let x_shape = x.shape();
     let ids_shape = indices.shape();
 
@@ -202,12 +283,10 @@ pub fn index_select(x: &Tensor, indices: &Tensor, dim: usize) -> Result<Tensor> 
         return x.index_select(indices, dim);
     }
 
-    // Only dim 0 for now.
     if dim != 0 {
         return x.index_select(indices, dim);
     }
 
-    // Layout checks: both must be CUDA storages and contiguous on last dim.
     let (x_sto, x_l) = x.storage_and_layout();
     let (ids_sto, ids_l) = indices.storage_and_layout();
 
@@ -222,7 +301,6 @@ pub fn index_select(x: &Tensor, indices: &Tensor, dim: usize) -> Result<Tensor> 
         _ => return x.index_select(indices, dim),
     }
 
-    // Fast path
     let op = IndexSelect { dim };
     x.apply_op2_no_bwd(indices, &op)
 }
@@ -249,7 +327,6 @@ mod tests {
         let cols = 1024;
 
         let x = Tensor::randn(0., 1., (rows, cols), &device)?.to_dtype(DType::F32)?;
-        // Some duplicates & shuffle to be realistic.
         let raw_idx: Vec<u32> = (0..rows as u32).flat_map(|i| [i, i]).collect();
         let index_count = raw_idx.len();
         let indices = Tensor::from_vec(raw_idx, index_count, &device)?.to_dtype(DType::U32)?;

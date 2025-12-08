@@ -10,6 +10,13 @@ repository = "https://github.com/michaelfeil/candle-index-select-cu"
 name = "candle_index_select_cu"
 path = "src/lib.rs"
 
+[features]
+default = ["cuda-12"]
+# Use cuda-12 for candle 0.9+ with cudarc 0.16+ (new API)
+# Use cuda-11 for older candle versions (pre-0.9) with older cudarc API
+cuda-12 = []
+cuda-11 = []
+
 [dependencies]
 candle = { version = "*", package = "candle-core", features = ["cuda"] }
 half = { version = "2.3.1", features = ["num-traits"] }
