@@ -19,6 +19,16 @@ fn setup_tensors<S: Into<Shape>>(
     Ok((x_f32, x_f16, indices.clone(), indices))
 }
 
+fn assert_equal(a: &Tensor, b: &Tensor, eps: f64) -> Result<()> {
+    let diff = (a.to_dtype(DType::F32)? - b.to_dtype(DType::F32)?)?;
+    let diff = (diff.sqr()?.sum_all()? / diff.elem_count() as f64)?;
+    let diff = diff.to_scalar::<f32>()? as f64;
+    if diff > eps {
+        candle::bail!("tensors are not equal, diff: {}", diff);
+    }
+    Ok(())
+}
+
 fn run_benchmark<S: Into<Shape> + Clone>(
     c: &mut Criterion,
     group_name: &str,
@@ -37,11 +47,15 @@ fn run_benchmark<S: Into<Shape> + Clone>(
     };
 
     let mut group = c.benchmark_group(group_name);
+    group.sample_size(500);
 
     group.bench_function("native_f32", |b| {
         b.iter(|| black_box(x_f32.index_select(&idx_f32, 0).unwrap()))
     });
 
+    let native_result_f32 = x_f32.index_select(&idx_f32, 0).unwrap();
+    let custom_result_f32 = candle_index_select_cu::index_select(&x_f32, &idx_f32, 0).unwrap();
+    assert_equal(&native_result_f32, &custom_result_f32, 1e-6).unwrap();
     group.bench_function("custom_f32", |b| {
         b.iter(|| black_box(candle_index_select_cu::index_select(&x_f32, &idx_f32, 0).unwrap()))
     });
@@ -50,6 +64,9 @@ fn run_benchmark<S: Into<Shape> + Clone>(
         b.iter(|| black_box(x_f16.index_select(&idx_f16, 0).unwrap()))
     });
 
+    let native_result_f16 = x_f16.index_select(&idx_f16, 0).unwrap();
+    let custom_result_f16 = candle_index_select_cu::index_select(&x_f16, &idx_f16, 0).unwrap();
+    assert_equal(&native_result_f16, &custom_result_f16, 1e-2).unwrap();
     group.bench_function("custom_f16", |b| {
         b.iter(|| black_box(candle_index_select_cu::index_select(&x_f16, &idx_f16, 0).unwrap()))
     });
@@ -60,7 +77,12 @@ fn run_benchmark<S: Into<Shape> + Clone>(
 fn bench_index_select(c: &mut Criterion) {
     run_benchmark(c, "index_select_short_2d", (100, 128), 200);
     run_benchmark(c, "index_select_long_2d", (16_000, 1024), 70_000);
-    run_benchmark(c, "index_select_very_long_2d", (100_000, 2048), 500_000);
+    run_benchmark(
+        c,
+        "index_select_very_long_2d",
+        (100_000, 2048),
+        500_000,
+    );
     run_benchmark(c, "index_select_3d", (10, 100, 128), 200);
 }
 
