@@ -5,17 +5,8 @@ use candle::backend::BackendStorage;
 use candle::{CpuStorage, CudaStorage, DType, Layout, Result, Shape, Storage, Tensor};
 use half::f16;
 
-#[cfg(feature = "cuda-12")]
+#[cfg(any(feature = "cuda-12", feature = "cuda-11"))]
 use candle::cuda_backend::cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT;
-#[cfg(feature = "cuda-12")]
-use candle::cuda_backend::cudarc::driver::DevicePtr;
-
-#[cfg(feature = "cuda-11")]
-use candle::cuda_backend::cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT;
-#[cfg(feature = "cuda-11")]
-use candle::cuda_backend::cudarc::driver::DevicePtr;
-#[cfg(feature = "cuda-11")]
-use candle::cuda_backend::WrapErr;
 
 fn index_select_internal_type(dtype: DType) -> Result<u32> {
     let code = match dtype {
@@ -31,52 +22,68 @@ pub struct IndexSelect {
     pub dim: usize,
 }
 
-impl IndexSelect {
-    #[cfg(feature = "cuda-12")]
-    fn fwd<
+/// Validate input layouts and return (rows, cols, index_count)
+fn validate_inputs(
+    x_l: &Layout,
+    ids_l: &Layout,
+    dim: usize,
+) -> Result<(usize, usize, usize)> {
+    let x_stride = x_l.stride();
+    let ids_stride = ids_l.stride();
+    let x_rank = x_stride.len();
+    let ids_rank = ids_stride.len();
+
+    if x_rank != 2 {
+        candle::bail!("candle-index-select expects input tensors of rank 2. Found: {x_rank}");
+    }
+    if ids_rank != 1 {
+        candle::bail!("candle-index-select expects index tensor of rank 1. Found: {ids_rank}");
+    }
+    if x_stride[x_rank - 1] != 1 {
+        candle::bail!(
+            "the last dim of x must be contiguous for candle-index-select ({x_stride:?})"
+        );
+    }
+    if ids_stride[ids_rank - 1] != 1 {
+        candle::bail!(
+            "indices tensor must be contiguous for candle-index-select ({ids_stride:?})"
+        );
+    }
+    if dim != 0 {
+        candle::bail!(
+            "candle-index-select only supports dim == 0 for now (got {})",
+            dim
+        );
+    }
+
+    let rows = x_l.dims()[0];
+    let cols = x_l.dims()[1];
+    let index_count = ids_l.dims()[0];
+
+    Ok((rows, cols, index_count))
+}
+
+// =============================================================================
+// cudarc 0.16+ API (candle 0.9+)
+// =============================================================================
+#[cfg(feature = "cuda-12")]
+mod cuda_impl {
+    use super::*;
+    use candle::cuda_backend::cudarc::driver::DevicePtr;
+
+    pub fn fwd_impl<
         T: candle::cuda_backend::CudaDType + candle::cuda_backend::cudarc::driver::DeviceRepr,
     >(
-        &self,
         x: &CudaStorage,
         x_l: &Layout,
         ids: &CudaStorage,
         ids_l: &Layout,
+        rows: usize,
+        cols: usize,
+        index_count: usize,
+        dtype_code: u32,
     ) -> Result<(CudaStorage, Shape)> {
         let dev = x.device();
-
-        let x_stride = x_l.stride();
-        let ids_stride = ids_l.stride();
-        let x_rank = x_stride.len();
-        let ids_rank = ids_stride.len();
-
-        if x_rank != 2 {
-            candle::bail!("candle-index-select expects input tensors of rank 2. Found: {x_rank}");
-        }
-        if ids_rank != 1 {
-            candle::bail!("candle-index-select expects index tensor of rank 1. Found: {ids_rank}");
-        }
-        if x_stride[x_rank - 1] != 1 {
-            candle::bail!(
-                "the last dim of x must be contiguous for candle-index-select ({x_stride:?})"
-            );
-        }
-        if ids_stride[ids_rank - 1] != 1 {
-            candle::bail!(
-                "indices tensor must be contiguous for candle-index-select ({ids_stride:?})"
-            );
-        }
-        if self.dim != 0 {
-            candle::bail!(
-                "candle-index-select only supports dim == 0 for now (got {})",
-                self.dim
-            );
-        }
-
-        let rows = x_l.dims()[0];
-        let cols = x_l.dims()[1];
-        let index_count = ids_l.dims()[0];
-
-        let dtype_code = index_select_internal_type(x.dtype())?;
 
         let x = x.as_cuda_slice::<T>()?;
         let ids = ids.as_cuda_slice::<u32>()?;
@@ -87,7 +94,6 @@ impl IndexSelect {
         let out_shape = Shape::from((index_count, cols));
         let out = unsafe { dev.alloc::<T>(out_shape.elem_count()) }?;
 
-        // cudarc 0.16+ API: get stream from device, device_ptr takes stream arg
         let stream = dev.cuda_stream();
         let stream_ref = stream.as_ref();
 
@@ -123,52 +129,30 @@ impl IndexSelect {
         let out = CudaStorage::wrap_cuda_slice(out, dev.clone());
         Ok((out, out_shape))
     }
+}
 
-    #[cfg(feature = "cuda-11")]
-    fn fwd<
+// =============================================================================
+// Legacy cudarc API (candle pre-0.9)
+// =============================================================================
+#[cfg(feature = "cuda-11")]
+mod cuda_impl {
+    use super::*;
+    use candle::cuda_backend::cudarc::driver::DevicePtr;
+    use candle::cuda_backend::WrapErr;
+
+    pub fn fwd_impl<
         T: candle::cuda_backend::CudaDType + candle::cuda_backend::cudarc::driver::DeviceRepr,
     >(
-        &self,
         x: &CudaStorage,
         x_l: &Layout,
         ids: &CudaStorage,
         ids_l: &Layout,
+        rows: usize,
+        cols: usize,
+        index_count: usize,
+        dtype_code: u32,
     ) -> Result<(CudaStorage, Shape)> {
         let dev = x.device();
-
-        let x_stride = x_l.stride();
-        let ids_stride = ids_l.stride();
-        let x_rank = x_stride.len();
-        let ids_rank = ids_stride.len();
-
-        if x_rank != 2 {
-            candle::bail!("candle-index-select expects input tensors of rank 2. Found: {x_rank}");
-        }
-        if ids_rank != 1 {
-            candle::bail!("candle-index-select expects index tensor of rank 1. Found: {ids_rank}");
-        }
-        if x_stride[x_rank - 1] != 1 {
-            candle::bail!(
-                "the last dim of x must be contiguous for candle-index-select ({x_stride:?})"
-            );
-        }
-        if ids_stride[ids_rank - 1] != 1 {
-            candle::bail!(
-                "indices tensor must be contiguous for candle-index-select ({ids_stride:?})"
-            );
-        }
-        if self.dim != 0 {
-            candle::bail!(
-                "candle-index-select only supports dim == 0 for now (got {})",
-                self.dim
-            );
-        }
-
-        let rows = x_l.dims()[0];
-        let cols = x_l.dims()[1];
-        let index_count = ids_l.dims()[0];
-
-        let dtype_code = index_select_internal_type(x.dtype())?;
 
         let x = x.as_cuda_slice::<T>()?;
         let ids = ids.as_cuda_slice::<u32>()?;
@@ -177,15 +161,12 @@ impl IndexSelect {
         let ids = ids.slice(ids_l.start_offset()..);
 
         let out_shape = Shape::from((index_count, cols));
-        // Old cudarc API: alloc returns cudarc error, needs .w() wrapper
         let out = unsafe { dev.alloc::<T>(out_shape.elem_count()) }.w()?;
 
-        // Old cudarc API: device_ptr() takes no args, returns &u64
         let x_ptr = *x.device_ptr() as *const core::ffi::c_void;
         let ids_ptr = *ids.device_ptr() as *const u32;
         let dst_ptr = *out.device_ptr() as *mut core::ffi::c_void;
 
-        // Old candle API: attribute() on device directly
         let multi_processors_count = dev
             .attribute(CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT)
             .expect("failed to query CUDA multiprocessor count");
@@ -205,6 +186,22 @@ impl IndexSelect {
 
         let out = CudaStorage::wrap_cuda_slice(out, dev.clone());
         Ok((out, out_shape))
+    }
+}
+
+impl IndexSelect {
+    fn fwd<
+        T: candle::cuda_backend::CudaDType + candle::cuda_backend::cudarc::driver::DeviceRepr,
+    >(
+        &self,
+        x: &CudaStorage,
+        x_l: &Layout,
+        ids: &CudaStorage,
+        ids_l: &Layout,
+    ) -> Result<(CudaStorage, Shape)> {
+        let (rows, cols, index_count) = validate_inputs(x_l, ids_l, self.dim)?;
+        let dtype_code = index_select_internal_type(x.dtype())?;
+        cuda_impl::fwd_impl::<T>(x, x_l, ids, ids_l, rows, cols, index_count, dtype_code)
     }
 }
 
