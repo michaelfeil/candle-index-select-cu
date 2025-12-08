@@ -5,7 +5,7 @@ fn setup_tensors<S: Into<Shape>>(
     shape: S,
     out_rows: usize,
 ) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
-    let dev = Device::new_cuda(0)?;
+    let dev = Device::new_cuda(1)?;
 
     let shape = shape.into();
     let x_f32 = Tensor::randn(0.0f32, 1.0, shape.clone(), &dev)?;
@@ -78,12 +78,7 @@ fn run_benchmark<S: Into<Shape> + Clone>(
 fn bench_index_select(c: &mut Criterion) {
     run_benchmark(c, "index_select_short_2d", (100, 128), 200);
     run_benchmark(c, "index_select_long_2d", (16_000, 1024), 70_000);
-    run_benchmark(
-        c,
-        "index_select_very_long_2d",
-        (100_000, 2048),
-        500_000,
-    );
+    run_benchmark(c, "index_select_very_long_2d", (100_000, 2048), 500_000);
     run_benchmark(c, "index_select_3d", (10, 100, 128), 200);
 }
 
