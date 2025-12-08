@@ -1,0 +1,25 @@
+[package]
+name = "candle-index-select-cu"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+description = "Fast CUDA index_select kernel for Candle (f32/f16, u32 indices)."
+repository = "https://github.com/michaelfeil/candle-index-select-cu"
+
+[lib]
+name = "candle_index_select_cu"
+path = "src/lib.rs"
+
+[dependencies]
+candle = { version = "*", package = "candle-core", features = ["cuda"] }
+half = { version = "2.3.1", features = ["num-traits"] }
+anyhow = "1"
+
+[build-dependencies]
+anyhow = { version = "1", features = ["backtrace"] }
+num_cpus = "1.15.0"
+rayon = "1.7.0"
+
+[dev-dependencies]
+criterion = "0.5"
+rand = "0.8"
