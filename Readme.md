@@ -9,6 +9,7 @@ dimension 0 on 2D tensors `[rows, cols]`, with:
 - `f32` and `f16` data
 - cuda only.
 - Benchmarks and tests against the builtin implementation
+- makes index_select faster by allowing better copy kernels for contigous layouts 
 
 ## Usage
 

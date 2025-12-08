@@ -1,16 +1,15 @@
-use candle::Tensor;
-use candle_core as candle;
+use candle::{DType, Device, Result, Tensor};
 use criterion::{criterion_group, criterion_main, Criterion};
 
 fn setup_tensors(
     rows: usize,
     cols: usize,
     out_rows: usize,
-) -> candle::Result<(Tensor, Tensor, Tensor, Tensor)> {
-    let dev = candle::Device::new_cuda(0)?;
+) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
+    let dev = Device::new_cuda(0)?;
 
     let x_f32 = Tensor::randn(0.0f32, 1.0, (rows, cols), &dev)?;
-    let x_f16 = x_f32.to_dtype(candle::DType::F16)?;
+    let x_f16 = x_f32.to_dtype(DType::F16)?;
 
     let idx_data: Vec<u32> = (0..out_rows).map(|i| (i as u32) % (rows as u32)).collect();
     let indices = Tensor::from_vec(idx_data, out_rows, &dev)?;
@@ -35,7 +34,7 @@ fn bench_index_select(c: &mut Criterion) {
     });
 
     group.bench_function("fast_f32", |b| {
-        b.iter(|| candle_index_select::index_select(&x_f32, &idx_f32, 0).unwrap())
+        b.iter(|| candle_index_select_cu::index_select(&x_f32, &idx_f32, 0).unwrap())
     });
 
     group.bench_function("builtin_f16", |b| {
@@ -43,7 +42,7 @@ fn bench_index_select(c: &mut Criterion) {
     });
 
     group.bench_function("fast_f16", |b| {
-        b.iter(|| candle_index_select::index_select(&x_f16, &idx_f16, 0).unwrap())
+        b.iter(|| candle_index_select_cu::index_select(&x_f16, &idx_f16, 0).unwrap())
     });
 
     group.finish();

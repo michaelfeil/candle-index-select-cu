@@ -13,7 +13,6 @@ path = "src/lib.rs"
 [dependencies]
 candle = { version = "*", package = "candle-core", features = ["cuda"] }
 half = { version = "2.3.1", features = ["num-traits"] }
-anyhow = "1"
 
 [build-dependencies]
 anyhow = { version = "1", features = ["backtrace"] }
@@ -21,5 +20,6 @@ num_cpus = "1.15.0"
 rayon = "1.7.0"
 
 [dev-dependencies]
+candle = { version = "*", package = "candle-core", features = ["cuda"] }
 criterion = "0.5"
 rand = "0.8"

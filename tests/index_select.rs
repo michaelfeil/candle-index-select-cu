@@ -1,5 +1,5 @@
-use candle::Tensor;
-use candle_core as candle;
+use candle_index_select_cu as candle_index_select;
+use candle_index_select::candle;
 
 fn maybe_cuda_device() -> Option<candle::Device> {
     match candle::Device::new_cuda(0) {
@@ -8,7 +8,7 @@ fn maybe_cuda_device() -> Option<candle::Device> {
     }
 }
 
-fn allclose(a: &Tensor, b: &Tensor, tol: f32) -> candle::Result<bool> {
+fn allclose(a: &candle::Tensor, b: &candle::Tensor, tol: f32) -> candle::Result<bool> {
     let da = a.to_vec1::<f32>()?;
     let db = b.to_vec1::<f32>()?;
     if da.len() != db.len() {
@@ -33,9 +33,9 @@ fn compare_with_builtin_f32() -> candle::Result<()> {
     let cols = 1024;
     let out_rows = 70_000;
 
-    let x = Tensor::randn(0.0f32, 1.0, (rows, cols), &device)?;
+    let x = candle::Tensor::randn(0.0f32, 1.0, (rows, cols), &device)?;
     let idx_data: Vec<u32> = (0..out_rows).map(|i| (i as u32) % (rows as u32)).collect();
-    let indices = Tensor::from_vec(idx_data, out_rows, &device)?;
+    let indices = candle::Tensor::from_vec(idx_data, out_rows, &device)?;
 
     let fast = candle_index_select::index_select(&x, &indices, 0)?;
     let baseline = x.index_select(&indices, 0)?;
@@ -61,11 +61,11 @@ fn compare_with_builtin_f16() -> candle::Result<()> {
     let cols = 1024;
     let out_rows = 32_000;
 
-    let x_f32 = Tensor::randn(0.0f32, 1.0, (rows, cols), &device)?;
+    let x_f32 = candle::Tensor::randn(0.0f32, 1.0, (rows, cols), &device)?;
     let x = x_f32.to_dtype(candle::DType::F16)?;
 
     let idx_data: Vec<u32> = (0..out_rows).map(|i| (i as u32) % (rows as u32)).collect();
-    let indices = Tensor::from_vec(idx_data, out_rows, &device)?;
+    let indices = candle::Tensor::from_vec(idx_data, out_rows, &device)?;
 
     let fast = candle_index_select::index_select(&x, &indices, 0)?;
     let baseline = x.index_select(&indices, 0)?;
@@ -80,5 +80,3 @@ fn compare_with_builtin_f16() -> candle::Result<()> {
 
     Ok(())
 }
-// tOdo: add much more test (2D, 3D, contiguous, non-contiguous, dim 1, dim 2, etc.)
-// IMPORTANT.

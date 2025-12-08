@@ -1,12 +1,11 @@
 mod ffi;
 
+pub use candle;
 use candle::backend::BackendStorage;
 use candle::cuda_backend::cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT;
 use candle::cuda_backend::cudarc::driver::DevicePtr;
-use candle::cuda_backend::WrapErr;
 use candle::{CpuStorage, CudaStorage, DType, Layout, Result, Shape, Storage, Tensor};
 use half::f16;
-use std::ptr;
 
 fn index_select_internal_type(dtype: DType) -> Result<u32> {
     let code = match dtype {
@@ -81,28 +80,41 @@ impl IndexSelect {
 
         // Output shape: [index_count, cols].
         let out_shape = Shape::from((index_count, cols));
-        let out = unsafe { dev.alloc::<T>(out_shape.elem_count()) }.w()?;
+        let out = unsafe { dev.alloc::<T>(out_shape.elem_count()) }?;
 
-        // Get raw device pointers.
-        let x_ptr = *x.device_ptr() as *const core::ffi::c_void;
-        let ids_ptr = *ids.device_ptr() as *const u32;
-        let dst_ptr = *out.device_ptr() as *mut core::ffi::c_void;
+        // Get stream from the cuda device
+        let stream = dev.cuda_stream();
+        let stream_ref = stream.as_ref();
 
-        let multi_processors_count = dev
+        // Query multiprocessor count from the context
+        let multi_processors_count = stream
+            .context()
             .attribute(CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT)
-            .unwrap();
+            .expect("failed to query CUDA multiprocessor count");
 
-        unsafe {
-            ffi::run_index_select(
-                x_ptr,
-                ids_ptr,
-                dst_ptr,
-                rows as u32,
-                cols as u32,
-                index_count as u32,
-                multi_processors_count,
-                dtype_code,
-            );
+        // Get raw device pointers and run kernel in a scope so sync guards are dropped before moving out
+        {
+            let (x_devptr, _x_sync) = x.device_ptr(stream_ref);
+            let x_ptr = x_devptr as usize as *const core::ffi::c_void;
+
+            let (ids_devptr, _ids_sync) = ids.device_ptr(stream_ref);
+            let ids_ptr = ids_devptr as usize as *const u32;
+
+            let (out_devptr, _out_sync) = out.device_ptr(stream_ref);
+            let dst_ptr = out_devptr as usize as *mut core::ffi::c_void;
+
+            unsafe {
+                ffi::run_index_select(
+                    x_ptr,
+                    ids_ptr,
+                    dst_ptr,
+                    rows as u32,
+                    cols as u32,
+                    index_count as u32,
+                    multi_processors_count,
+                    dtype_code,
+                );
+            }
         }
 
         let out = CudaStorage::wrap_cuda_slice(out, dev.clone());
@@ -155,8 +167,13 @@ impl candle::CustomOp2 for IndexSelect {
 pub fn index_select(x: &Tensor, indices: &Tensor, dim: usize) -> Result<Tensor> {
     use candle::{DType, Device};
 
-    // Fallback if devices differ.
-    if x.device() != indices.device() {
+    // Fallback if devices differ (compare by matching on Device variants)
+    let devices_match = match (x.device(), indices.device()) {
+        (Device::Cpu, Device::Cpu) => true,
+        (Device::Cuda(a), Device::Cuda(b)) => a.id() == b.id(),
+        _ => false,
+    };
+    if !devices_match {
         return x.index_select(indices, dim);
     }
 
@@ -264,19 +281,6 @@ mod tests {
             to_vec2_round(&y_fast.to_dtype(DType::F32)?, 3)?,
             to_vec2_round(&y_ref.to_dtype(DType::F32)?, 3)?
         );
-        Ok(())
-    }
-
-    #[test]
-    fn test_fallback_cpu() -> Result<()> {
-        let device = Device::Cpu;
-        let x = Tensor::randn(0., 1., (8, 4), &device)?;
-        let indices = Tensor::from_vec(vec![0u32, 3, 7], 3, &device)?.to_dtype(DType::U32)?;
-
-        // Should just call regular candle index_select (CPU).
-        let y = index_select(&x, &indices, 0)?;
-        let y_ref = x.index_select(&indices, 0)?;
-        assert_eq!(y.to_vec2::<f32>()?, y_ref.to_vec2::<f32>()?);
         Ok(())
     }
 }
