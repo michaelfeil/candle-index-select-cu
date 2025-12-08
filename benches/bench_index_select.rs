@@ -48,6 +48,7 @@ fn run_benchmark<S: Into<Shape> + Clone>(
 
     let mut group = c.benchmark_group(group_name);
     group.sample_size(500);
+    group.warm_up_time(std::time::Duration::from_millis(1500));
 
     group.bench_function("native_f32", |b| {
         b.iter(|| black_box(x_f32.index_select(&idx_f32, 0).unwrap()))
