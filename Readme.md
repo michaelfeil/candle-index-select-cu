@@ -11,6 +11,23 @@ dimension 0 on 2D tensors `[rows, cols]`, with:
 - Benchmarks and tests against the builtin implementation
 - Makes index_select faster by allowing better copy kernels for contiguous layouts
 
+### Benchmark vs candle 0.9.1 kernels
+
+| Input Shape            | Out Rows | DType | candle 0.9.1 Time | candle-index-select-cu | Speedup |
+|------------------------|----------|-------|-------------|-------------|---------|
+| [100, 128]             | 200      | F32   | 15.946 µs   | 14.540 µs   | **1.10×** |
+| [100, 128]             | 200      | F16   | 15.967 µs   | 11.921 µs   | **1.34×** |
+| [16000, 1024]          | 70000    | F32   | 1.644 ms    | 202.462 µs  | **8.12×** |
+| [16000, 1024]          | 70000    | F16   | 1.079 ms    | 162.074 µs  | **6.66×** |
+| [100000, 2048]         | 500000   | F32   | 25.398 ms   | 2.838 ms    | **8.95×** |
+| [100000, 2048]         | 500000   | F16   | 15.674 ms   | 2.258 ms    | **6.94×** |
+| [10, 100, 128]         | 200      | F32   | 32.954 µs   | 16.455 µs   | **2.00×** |
+| [10, 100, 128]         | 200      | F16   | 32.616 µs   | 20.908 µs   | **1.56×** |
+| [2000, 64, 256]        | 10000    | F32   | 3.807 ms    | 456.034 µs  | **8.35×** |
+| [2000, 64, 256]        | 10000    | F16   | 2.404 ms    | 371.765 µs  | **6.47×** |
+
+all measure on h100.
+
 ## Usage
 
 Add to your `Cargo.toml`:
