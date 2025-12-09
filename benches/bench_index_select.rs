@@ -105,7 +105,7 @@ fn run_benchmark<S: Into<Shape> + Clone>(
             f();
         }
         // Measurement
-        for _ in 0..10 {
+        for _ in 0..20 {
             let start = std::time::Instant::now();
             f();
             durations.push(start.elapsed());
