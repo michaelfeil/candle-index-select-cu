@@ -116,3 +116,9 @@ cargo test
 ```bash
 cargo bench
 ```
+
+## Profiling
+
+```
+cargo build --release --bin profile_index_select && nsys profile -t cuda,osrt --stats=true -o nsys_index_select     /node-storage/cargo-target/release/profile_index_select
+```
