@@ -49,6 +49,9 @@ fn run_benchmark<S: Into<Shape> + Clone>(
     let mut group = c.benchmark_group(group_name);
     group.sample_size(500);
     group.warm_up_time(std::time::Duration::from_millis(1500));
+    group.measurement_time(std::time::Duration::from_millis(5000));
+
+    let _ = x_f32.index_select(&idx_f32, 0).unwrap(); // Warmup
 
     group.bench_function("native_f32", |b| {
         b.iter(|| {
@@ -105,7 +108,7 @@ fn run_benchmark<S: Into<Shape> + Clone>(
             f();
         }
         // Measurement
-        for _ in 0..20 {
+        for _ in 0..100 {
             let start = std::time::Instant::now();
             f();
             durations.push(start.elapsed());
