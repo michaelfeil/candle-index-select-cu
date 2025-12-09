@@ -17,7 +17,7 @@ fn main() -> Result<()> {
     // --- Config: this is your target case ---
     let rows = 16_000usize;
     let cols = 1_024usize;
-    let out_rows = 10_000usize;
+    let out_rows = 70_000usize;
     let iters = 1000; // enough to get stable averages in Nsight
 
     let device = Device::new_cuda(0)?;
