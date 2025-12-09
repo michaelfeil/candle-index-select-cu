@@ -18,7 +18,7 @@ fn main() -> Result<()> {
     let rows = 16_000usize;
     let cols = 1_024usize;
     let out_rows = 10_000usize;
-    let iters = 500; // enough to get stable averages in Nsight
+    let iters = 1000; // enough to get stable averages in Nsight
 
     let device = Device::new_cuda(0)?;
     println!("Using device: {:?}", device);
@@ -34,7 +34,7 @@ fn main() -> Result<()> {
         .to_dtype(DType::U32)?;
 
     // --- Warmup (JIT, caches, etc.) ---
-    for _ in 0..10 {
+    for _ in 0..iters {
         let _ = candle_index_select::index_select(&x, &indices, 0)?;
     }
     device.synchronize()?;
