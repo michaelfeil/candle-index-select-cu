@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright (c) 2025 Michael Feil
-// 
+//
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
@@ -344,7 +344,8 @@ fn test_3d_dim0_fast_vs_baseline() -> candle::Result<()> {
     let device = cuda_device()?;
 
     let x = candle::Tensor::randn(0.0f32, 1.0, (10, 100, 128), &device)?;
-    let idx = candle::Tensor::from_vec((0u32..20).map(|i| i % 10).collect::<Vec<_>>(), 20, &device)?;
+    let idx =
+        candle::Tensor::from_vec((0u32..20).map(|i| i % 10).collect::<Vec<_>>(), 20, &device)?;
 
     let fast = candle_index_select::index_select(&x, &idx, 0)?;
     let baseline = x.index_select(&idx, 0)?;
@@ -419,7 +420,11 @@ fn test_f16_odd_cols_scalar_fallback() -> candle::Result<()> {
     let x_f32 = candle::Tensor::randn(0.0f32, 1.0, (512, 255), &device)?;
     let x = x_f32.to_dtype(candle::DType::F16)?;
 
-    let idx = candle::Tensor::from_vec((0u32..200).map(|i| i % 512).collect::<Vec<_>>(), 200, &device)?;
+    let idx = candle::Tensor::from_vec(
+        (0u32..200).map(|i| i % 512).collect::<Vec<_>>(),
+        200,
+        &device,
+    )?;
 
     let fast = candle_index_select::index_select(&x, &idx, 0)?;
     let baseline = x.index_select(&idx, 0)?;

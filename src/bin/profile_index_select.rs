@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright (c) 2025 Michael Feil
-// 
+//
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
@@ -8,7 +8,6 @@
 // except according to those terms.
 //
 // Authors explaination: Provide a copy of the first two lines in each redistributed version.
-
 
 use candle_index_select::candle;
 use candle_index_select_cu as candle_index_select;
@@ -27,7 +26,7 @@ extern "C" {
 
 fn main() -> Result<()> {
     std::thread::sleep(std::time::Duration::from_secs(1)); // time to attach profiler
-    // --- Config: this is your target case ---
+                                                           // --- Config: this is your target case ---
     let rows = 16_000usize;
     let cols = 1_024usize;
     let out_rows = 70_000usize;
@@ -37,14 +36,10 @@ fn main() -> Result<()> {
     println!("Using device: {:?}", device);
 
     // --- Setup tensors ---
-    let x = Tensor::randn(0.0f32, 1.0, (rows, cols), &device)?
-        .to_dtype(DType::F16)?; // mainly profiling f16; switch to F32 if you want
+    let x = Tensor::randn(0.0f32, 1.0, (rows, cols), &device)?.to_dtype(DType::F16)?; // mainly profiling f16; switch to F32 if you want
 
-    let idx_data: Vec<u32> = (0..out_rows)
-        .map(|i| (i as u32) % (rows as u32))
-        .collect();
-    let indices = Tensor::from_vec(idx_data, out_rows, &device)?
-        .to_dtype(DType::U32)?;
+    let idx_data: Vec<u32> = (0..out_rows).map(|i| (i as u32) % (rows as u32)).collect();
+    let indices = Tensor::from_vec(idx_data, out_rows, &device)?.to_dtype(DType::U32)?;
 
     // --- Warmup (JIT, caches, etc.) ---
     for _ in 0..iters {
