@@ -101,7 +101,7 @@ def main():
         print("CUDA is not available!")
         return
     
-    device = torch.device("cuda:0")
+    device = torch.device("cuda")
     print(f"Using device: {torch.cuda.get_device_name(device)}")
     print(f"PyTorch version: {torch.__version__}")
     print(f"CUDA version: {torch.version.cuda}")
