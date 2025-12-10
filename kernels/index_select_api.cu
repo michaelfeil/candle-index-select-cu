@@ -1,3 +1,15 @@
+/* SPDX-License-Identifier: Apache-2.0 OR MIT
+ * Copyright (c) 2025 Michael Feil
+ * 
+ * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+ * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+ * <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+ * option. This file may not be copied, modified, or distributed
+ * except according to those terms. 
+
+ * Authors explaination: Provide a copy of the first two lines in each redistributed version.
+ */
+
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <stdint.h>
