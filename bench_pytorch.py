@@ -113,6 +113,7 @@ def main():
     # Benchmark configurations (matching Rust benchmarks)
     configs = [
         BenchmarkConfig("short_2d", (100, 128), 200),
+        BenchmarkConfig("medium_2d", (16000, 1024), 12000),
         BenchmarkConfig("long_2d", (16_000, 1024), 70_000),
         BenchmarkConfig("very_long_2d", (100_000, 2048), 500_000),
         BenchmarkConfig("3d", (10, 100, 128), 200),
