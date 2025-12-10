@@ -457,3 +457,164 @@ fn test_index_dtype_mismatch_fallback() -> candle::Result<()> {
     )?);
     Ok(())
 }
+
+// =============================================================================
+// Parameterized Tests
+// =============================================================================
+
+#[test]
+fn test_2d_various_shapes_f32() -> candle::Result<()> {
+    let device = cuda_device()?;
+    
+    let test_cases = vec![
+        (8, 8, 4),        // Small square
+        (16, 32, 8),      // Small rectangular
+        (100, 128, 50),   // Medium, aligned
+        (100, 127, 50),   // Medium, misaligned
+        (200, 256, 100),  // Larger, aligned
+        (200, 255, 100),  // Larger, misaligned
+        (1000, 4, 500),   // Very narrow
+        (50, 1000, 25),   // Very wide
+        (1, 1024, 1),     // Single row
+        (1024, 1, 512),   // Single column
+        (600, 1048, 1048), // Large with odd columns
+    ];
+
+    for (rows, cols, out_rows) in test_cases {
+        let x = candle::Tensor::randn(0.0f32, 1.0, (rows, cols), &device)?;
+        let indices = candle::Tensor::from_vec(
+            (0..out_rows).map(|i| (i as u32) % (rows as u32)).collect::<Vec<_>>(),
+            out_rows,
+            &device
+        )?;
+
+        let fast = candle_index_select::index_select(&x, &indices, 0)?;
+        let baseline = x.index_select(&indices, 0)?;
+
+        assert_eq!(fast.dims(), baseline.dims(), "Shape mismatch for case ({}, {}, {})", rows, cols, out_rows);
+        assert!(
+            allclose(&fast.flatten_all()?, &baseline.flatten_all()?, 1e-5)?,
+            "Values mismatch for case ({}, {}, {})", rows, cols, out_rows
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_2d_various_shapes_f16() -> candle::Result<()> {
+    let device = cuda_device()?;
+    
+    let test_cases = vec![
+        (8, 8, 4),        // Small square
+        (16, 32, 8),      // Small rectangular, aligned for half2
+        (16, 31, 8),      // Small rectangular, misaligned for half2
+        (100, 128, 50),   // Medium, aligned
+        (100, 127, 50),   // Medium, misaligned
+        (200, 256, 100),  // Larger, aligned
+        (200, 255, 100),  // Larger, misaligned
+        (1000, 2, 500),   // Very narrow, aligned
+        (1000, 3, 500),   // Very narrow, misaligned
+        (50, 1024, 25),   // Very wide
+        (600, 1048, 1048), // Large with odd columns
+    ];
+
+    for (rows, cols, out_rows) in test_cases {
+        let x_f32 = candle::Tensor::randn(0.0f32, 1.0, (rows, cols), &device)?;
+        let x = x_f32.to_dtype(candle::DType::F16)?;
+        let indices = candle::Tensor::from_vec(
+            (0..out_rows).map(|i| (i as u32) % (rows as u32)).collect::<Vec<_>>(),
+            out_rows,
+            &device
+        )?;
+
+        let fast = candle_index_select::index_select(&x, &indices, 0)?;
+        let baseline = x.index_select(&indices, 0)?;
+
+        assert_eq!(fast.dims(), baseline.dims(), "Shape mismatch for F16 case ({}, {}, {})", rows, cols, out_rows);
+        assert!(
+            allclose(
+                &fast.to_dtype(candle::DType::F32)?.flatten_all()?,
+                &baseline.to_dtype(candle::DType::F32)?.flatten_all()?,
+                5e-3
+            )?,
+            "Values mismatch for F16 case ({}, {}, {})", rows, cols, out_rows
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_multi_dimensional_various_shapes() -> candle::Result<()> {
+    let device = cuda_device()?;
+    
+    let test_cases = vec![
+        // (shape, indices_count, dim)
+        (vec![10, 8], 5, 0),                    // 2D
+        (vec![5, 6, 7], 3, 0),                  // 3D
+        (vec![4, 5, 6, 7], 2, 0),               // 4D
+        (vec![2, 3, 4, 5, 6], 2, 0),            // 5D
+        (vec![8, 16, 32], 4, 0),                // 3D larger
+        (vec![16, 32, 64, 128], 8, 0),          // 4D larger
+    ];
+
+    for (shape, indices_count, dim) in test_cases {
+        let x = candle::Tensor::randn(0.0f32, 1.0, shape.as_slice(), &device)?;
+        let max_idx = shape[dim] as u32;
+        let indices = candle::Tensor::from_vec(
+            (0..indices_count).map(|i| (i as u32) % max_idx).collect::<Vec<_>>(),
+            indices_count,
+            &device
+        )?;
+
+        let fast = candle_index_select::index_select(&x, &indices, dim)?;
+        let baseline = x.index_select(&indices, dim)?;
+
+        assert_eq!(fast.dims(), baseline.dims(), "Shape mismatch for multi-dim case {:?}", shape);
+        assert!(
+            allclose(&fast.flatten_all()?, &baseline.flatten_all()?, 1e-5)?,
+            "Values mismatch for multi-dim case {:?}", shape
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_edge_case_indices_patterns() -> candle::Result<()> {
+    let device = cuda_device()?;
+    
+    let x = candle::Tensor::randn(0.0f32, 1.0, (100, 64), &device)?;
+    
+    let test_patterns = vec![
+        // (description, indices)
+        ("sequential", (0..10).collect::<Vec<_>>()),
+        ("reverse", (0..10).rev().collect::<Vec<_>>()),
+        ("all_same", vec![42; 20]),
+        ("alternating", (0..20).map(|i| if i % 2 == 0 { 0 } else { 99 }).collect()),
+        ("sparse_high", vec![5, 15, 25, 35, 45, 55, 65, 75, 85, 95]),
+        ("random_like", vec![42, 7, 91, 13, 65, 2, 88, 34, 56, 78]),
+        ("boundary", vec![0, 1, 98, 99, 0, 99, 1, 98]),
+    ];
+
+    for (desc, indices_data) in test_patterns {
+        let indices_len = indices_data.len();
+        let indices = candle::Tensor::from_vec(
+            indices_data.into_iter().map(|x| x as u32).collect::<Vec<_>>(),
+            indices_len,
+            &device
+        )?;
+
+        let fast = candle_index_select::index_select(&x, &indices, 0)?;
+        let baseline = x.index_select(&indices, 0)?;
+
+        assert_eq!(fast.dims(), baseline.dims(), "Shape mismatch for pattern: {}", desc);
+        assert!(
+            allclose(&fast.flatten_all()?, &baseline.flatten_all()?, 1e-5)?,
+            "Values mismatch for pattern: {}", desc
+        );
+    }
+
+    Ok(())
+}
