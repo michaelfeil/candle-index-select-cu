@@ -27,7 +27,7 @@ def warmup(device: torch.device, iterations: int = 10):
         _ = x @ x.T
     torch.cuda.synchronize()
 
-
+@torch.no_grad()
 def benchmark_index_select(
     config: BenchmarkConfig,
     device: torch.device,

@@ -2,7 +2,7 @@
 name = "candle-index-select-cu"
 version = "0.1.0"
 edition = "2021"
-license = "Apache-2.0 OR MIT"
+license = "Unknown"
 description = "Fast CUDA index_select kernel for Candle (f32/f16, u32 indices)."
 repository = "https://github.com/michaelfeil/candle-index-select-cu"
 

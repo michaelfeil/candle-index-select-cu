@@ -14,6 +14,7 @@ extern "C" {
 }
 
 fn main() -> Result<()> {
+    std::thread::sleep(std::time::Duration::from_secs(1)); // time to attach profiler
     // --- Config: this is your target case ---
     let rows = 16_000usize;
     let cols = 1_024usize;

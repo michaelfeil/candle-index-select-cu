@@ -31,10 +31,15 @@ __global__ void index_select_rows_scalar(
 }
 
 // =======================================
-// 2. Vectorized row-wise kernel (float4)
+// 2. Vectorized row-wise kernel (float4 / half2)
 // =======================================
 template <typename T, int Vec> struct VecType;
-template <> struct VecType<float, 4> { using Type = float4; };
+
+template <>
+struct VecType<float, 4> { using Type = float4; };
+
+template <>
+struct VecType<__half, 2> { using Type = __half2; };
 
 template <typename T, int Vec>
 __global__ void index_select_rows_vec(
@@ -89,11 +94,11 @@ __global__ void index_select_rows_half2_warp(
 ) {
     const uint32_t cols_vec = cols / 2; // number of half2 per row
     const int threads_per_warp = 32;
-    const int warps_per_block = WARPS_PER_BLOCK;
-    const int lanes_per_block = warps_per_block * threads_per_warp;
+    const int warps_per_block  = WARPS_PER_BLOCK;
+    const int lanes_per_block  = warps_per_block * threads_per_warp;
 
-    const int lane_id  = threadIdx.x % threads_per_warp;
-    const int warp_id  = threadIdx.x / threads_per_warp; // 0 .. WARPS_PER_BLOCK-1
+    const int lane_id = threadIdx.x % threads_per_warp;
+    const int warp_id = threadIdx.x / threads_per_warp; // 0 .. WARPS_PER_BLOCK-1
 
     if (threadIdx.x >= lanes_per_block) return; // safety if blockDim.x > lanes_per_block
 
@@ -144,7 +149,7 @@ static inline void compute_launch_config_rows_scalar(
     dim3& block
 ) {
     const int threads = 256;
-    int max_blocks = multi_processor_count > 0 ? multi_processor_count * 8 : 1024;
+    int max_blocks = multi_processor_count > 0 ? multi_processor_count * 16 : 1024;
     int blocks = (int)index_count;
     if (blocks > max_blocks) blocks = max_blocks;
     if (blocks < 1) blocks = 1;
@@ -152,7 +157,7 @@ static inline void compute_launch_config_rows_scalar(
     block = dim3(threads, 1, 1);
 }
 
-// For the warp-specialized half2 kernel:
+// For the warp-specialized half2 kernel (with oversubscription)
 template <int WARPS_PER_BLOCK>
 static inline void compute_launch_config_rows_half2(
     uint32_t index_count,
@@ -161,12 +166,20 @@ static inline void compute_launch_config_rows_half2(
     dim3& block
 ) {
     const int threads = WARPS_PER_BLOCK * 32;
-    int max_blocks = multi_processor_count > 0 ? multi_processor_count * 8 : 1024;
+    int sm_count = multi_processor_count > 0 ? multi_processor_count : 80;
 
-    uint32_t blocks_needed = (index_count + WARPS_PER_BLOCK - 1) / WARPS_PER_BLOCK;
-    int blocks = (int)blocks_needed;
+    int max_blocks = sm_count * 8;
+    if (max_blocks < 1) max_blocks = 1;
+
+    // Warps needed to cover all rows once
+    uint64_t warps_needed = (uint64_t)index_count;
+    int blocks_needed = (int)((warps_needed + WARPS_PER_BLOCK - 1) / WARPS_PER_BLOCK);
+
+    // For small index_count, oversubscribe to max_blocks;
+    // warps with j >= index_count just exit immediately.
+    int blocks = blocks_needed;
+    if (blocks < max_blocks) blocks = max_blocks;
     if (blocks > max_blocks) blocks = max_blocks;
-    if (blocks < 1) blocks = 1;
 
     grid  = dim3(blocks, 1, 1);
     block = dim3(threads, 1, 1);
@@ -235,13 +248,17 @@ static void launch_index_select(
         return;
     }
 
-    // ---------- __half path: warp-specialized half2 + scalar fallback ----------
+    // ---------- __half path: warp-specialized half2 + half2-row + scalar fallback ----------
     if constexpr (std::is_same<T, __half>::value) {
-        // Heuristic: use warp-specialized half2 kernel for "big" shapes.
-        const bool big_enough = (cols >= 128) && (index_count >= 1024);
-        const bool even_cols  = (cols % 2 == 0);
+        const bool even_cols = (cols % 2 == 0);
+        const uint64_t cols_vec = cols / 2;
+        const uint64_t work_items = (uint64_t)index_count * cols_vec;
 
-        if (big_enough && even_cols) {
+        // Heuristic: only use warp-specialized kernel for "big" workloads.
+        // (Tune this threshold based on your benchmarks.)
+        const bool big_enough = even_cols && (work_items >= (uint64_t)1 << 22);
+
+        if (big_enough) {
             constexpr int WARPS_PER_BLOCK = 4; // 4 warps -> 128 threads
             dim3 grid, block;
             compute_launch_config_rows_half2<WARPS_PER_BLOCK>(
@@ -266,7 +283,41 @@ static void launch_index_select(
             return;
         }
 
-        // For smaller or odd-width shapes, fall back to scalar
+        // Medium/small, but even cols: half2 row kernel (like float4 path)
+        if (even_cols) {
+            dim3 grid, block;
+            compute_launch_config_rows_scalar(index_count, cols, multi_processor_count, grid, block);
+
+            const __half* x_h   = static_cast<const __half*>(x);
+            __half*       dst_h = static_cast<__half*>(dst);
+
+            using VecT = typename VecType<__half, 2>::Type;
+            const uintptr_t x_addr   = reinterpret_cast<uintptr_t>(x_h);
+            const uintptr_t dst_addr = reinterpret_cast<uintptr_t>(dst_h);
+            const bool aligned =
+                ((x_addr  % alignof(VecT)) == 0) &&
+                ((dst_addr % alignof(VecT)) == 0);
+
+            if (aligned) {
+                index_select_rows_vec<__half, 2><<<grid, block>>>(
+                    x_h, idx, dst_h, rows, cols, index_count
+                );
+#ifdef DEBUG
+                {
+                    const cudaError_t err = cudaGetLastError();
+                    if (err != cudaSuccess) {
+                        printf("index_select_rows_vec<__half,2> launch failed: %s\n",
+                               cudaGetErrorString(err));
+                    }
+                }
+#endif
+                return;
+            }
+
+            // misaligned -> fall through to scalar
+        }
+
+        // Odd cols or misaligned -> scalar fallback
         dim3 grid, block;
         compute_launch_config_rows_scalar(index_count, cols, multi_processor_count, grid, block);
 
