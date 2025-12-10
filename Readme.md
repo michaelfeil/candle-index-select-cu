@@ -3,15 +3,16 @@
 Fast CUDA `index_select` for [Candle](https://github.com/huggingface/candle). Inspired by https://github.com/huggingface/candle-layer-norm project.
 
 This crate provides a specialized CUDA kernel for `index_select` along
-dimension 0 on 2D tensors `[rows, cols]`, with:
+dimension 0 on multi-dimensional tensors, with:
 
-- 32-bit indices (`u32`)
-- `f32` and `f16` data
-- CUDA only
-- Benchmarks and tests against the builtin implementation
-- Makes index_select faster by allowing better copy kernels for contiguous layouts
-- runs faster only if dim=0
-- runs faster only if cols is divisible by 2 for fp16 (half2) and 4 for fp32 (float4) memory ops. 
+- **Optimized memory access patterns** using vectorized loads (float4 for F32, half2 for F16)
+- **F32 and F16 data types** with dtype-specific optimizations
+- **CUDA-only implementation** with automatic fallback to candle's builtin
+- **Dimension 0 specialization** for row-based indexing operations
+- **Contiguous memory layout optimization** for better cache utilization
+- **Significant speedups** on large tensors (up to 4-22× vs candle, 4× vs PyTorch 2.1) 
+- **Tested** against candle index_select for correctness.
+- faster only if dim=0 and tensor dim=0 cols is divisible by 2 for fp16 (half2) and 4 for fp32 (float4) memory ops.
 
 ### Benchmark Results (H100 80GB)
 
@@ -32,6 +33,8 @@ dimension 0 on 2D tensors `[rows, cols]`, with:
 | [2000, 64, 256]        | 10000    | F32   | 3.737 ms     | 432.668 µs             | **8.64×** |
 | [2000, 64, 256]        | 10000    | F16   | 2.880 ms     | 211.468 µs             | **13.62×** |
 
+*Benchmarks run on NVIDIA H100 80GB HBM3.*
+
 #### vs PyTorch 2.1.0a0+b5021ba (CUDA 12.1)
 
 | Input Shape            | Out Rows | DType | PyTorch      | candle-index-select-cu | Speedup |
@@ -47,7 +50,7 @@ dimension 0 on 2D tensors `[rows, cols]`, with:
 | [2000, 64, 256]        | 10000    | F32   | 1.035 ms     | 432.668 µs             | **2.39×** |
 | [2000, 64, 256]        | 10000    | F16   | 1.005 ms     | 211.468 µs             | **4.75×** |
 
-*Benchmarks run on NVIDIA H100 80GB HBM3.*
+*Benchmarks depend on Pytorch version.*
 
 ## Usage
 
@@ -55,7 +58,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-candle-index-select-cu = { git = "https://github.com/michaelfeil/candle-index-select-cu" }
+candle-index-select-cu = "0.0.1"
 candle-core = { version = "0.9", features = ["cuda"] }
 ```
 
@@ -72,6 +75,37 @@ let indices = Tensor::from_vec(vec![0u32, 5, 10, 15], 4, &device)?;
 // Fast path for 2D + dim 0 + f32/f16 + u32 indices
 // Falls back to candle's builtin for other cases
 let result = index_select(&x, &indices, 0)?;
+```
+
+### Recommended Integration with Feature Flags
+
+For better compatibility to CPU and other backends, consider wrapping the usage behind a CUDA feature flag:
+
+```toml
+[dependencies]
+candle-index-select-cu = { version = "0.0.1", optional = true }
+candle-core = "0.9"
+
+[features]
+default = []
+cuda = ["candle-core/cuda", "candle-index-select-cu"]
+```
+
+```rust
+#[cfg(feature = "cuda")]
+use candle_index_select_cu;
+
+#[inline]
+pub fn index_select(tensor: &Tensor, ids: &Tensor, dim: usize) -> Result<Tensor> {
+    #[cfg(not(feature = "cuda"))]
+    {
+        tensor.index_select(ids, dim)
+    }
+    #[cfg(feature = "cuda")]
+    {
+        candle_index_select_cu::index_select(tensor, ids, dim)
+    }
+}
 ```
 
 ## Feature Flags
@@ -102,7 +136,7 @@ candle-index-select-cu = { git = "https://github.com/michaelfeil/candle-index-se
 The CUDA kernel is used when all of these conditions are met:
 
 - Device: CUDA
-- Input tensor: rank 2 (2D), last dim contiguous
+- Input tensor: rank >= 2 (2D, 3D, 4D, etc.), fully contiguous
 - Indices tensor: rank 1, contiguous, DType::U32
 - Dimension: 0
 - Input dtype: F16 or F32
