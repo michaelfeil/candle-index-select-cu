@@ -121,6 +121,12 @@ cargo bench
 
 ## Profiling
 
+### NSys
 ```
-cargo build --release --bin profile_index_select && nsys profile -t cuda,osrt --stats=true -o nsys_index_select     /node-storage/cargo-target/release/profile_index_select
+cargo build --release --bin profile_index_select && nsys profile -t cuda,osrt --stats=true -o nsys_index_select   cargo/release/profile_index_select
+```
+
+### NCU
+```
+cargo build --release --bin profile_index_select && CUDA_LAUNCH_BLOCKING=1 ncu --set full     --devices 0     --target-processes all     --kernel-name-base demangled     -k "regex:.*index_select.*"     --launch-skip 1500     --launch-count 1     -o index_select_profile  cargo/release/profile_index_select
 ```
