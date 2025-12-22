@@ -122,6 +122,7 @@ This crate supports both older and newer versions of candle/cudarc:
 ```toml
 [dependencies]
 candle-index-select-cu = { git = "https://github.com/michaelfeil/candle-index-select-cu" }
+# best to globally pin candle -> via patches
 ```
 
 ### For older candle versions (pre-0.9)
